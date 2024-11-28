@@ -1,5 +1,6 @@
 #include "ParallelOperations.h"
 
+
 VectorXd ParallelOperations::mv_product(const SparseMatrix<double, Eigen::RowMajor>& A,
                                              const VectorXd& v) {
   int rows = A.rows();
@@ -16,40 +17,85 @@ VectorXd ParallelOperations::mv_product(const SparseMatrix<double, Eigen::RowMaj
   return res;
 }
 
-VectorXd ParallelOperations::BiCGStab(const SparseMatrix<double, Eigen::RowMajor>& A,
+
+void ParallelOperations::BiCGStab(const SparseMatrix<double, Eigen::RowMajor>& A,
+                                      VectorXd& x,
                                       const VectorXd& b, 
                                       const double& tolerance,
                                       const int& max_iter) {
-  // std::cout << "TIME PARALLEL " << time_parallel.count() << std::endl;
-    VectorXd old_x = VectorXd::Zero(A.cols());
-    VectorXd new_x = old_x;
-    VectorXd old_r = b - mv_product(A, old_x);
-    VectorXd co_r_0 = old_r;
-    VectorXd new_r = old_r;
-    VectorXd p = old_r;
 
-    int current_iter = 0;
+  size_t n = A.cols();
+ 
+  VectorXd r = b - mv_product(A, x);
+  VectorXd r0 = r;
 
-    double tolerance2 = tolerance * tolerance * b.squaredNorm();
+  double r0_norm = r0.squaredNorm();
+  double b_norm = b.squaredNorm();
 
-    while (new_r.squaredNorm() > tolerance2 && current_iter < max_iter) {
-        VectorXd Ap = mv_product(A, p);
-        double alpha = old_r.dot(co_r_0)/Ap.dot(co_r_0);
-        VectorXd s = old_r - alpha*Ap;
+  int current_iter = 0;
+  int restarts = 0;
 
-        VectorXd As = mv_product(A, s);
-        double omega = As.dot(s)/As.dot(As);
-        new_x = old_x + alpha * p + omega * s;
+  double tol2 = tolerance * tolerance * b_norm;
+  double eps2 = NumTraits<VectorXd::Scalar>::epsilon();
+  eps2 *= eps2;
 
-        new_r = s - omega * As;
-        double beta = (alpha * new_r.dot(co_r_0))/(omega * old_r.dot(co_r_0));
-        p = new_r + beta * (p - omega * Ap);
+  if (b_norm == 0) {
+    x = VectorXd::Zero(n);
+    return;
+  }
 
-        old_r = new_r;
-        old_x = new_x;
+  double rho = 1;
+  double alpha = 1;
+  double w = 1;
 
-        current_iter++;
+  VectorXd Ap = VectorXd::Zero(n), p = VectorXd::Zero(n);
+  VectorXd As = VectorXd::Zero(n), s = VectorXd::Zero(n);
+
+  while (r.squaredNorm() > tol2 && current_iter < max_iter) {
+    double rho_old = rho;
+    rho = r0.dot(r);
+
+    // In case an old residual is almost orthogonal to a new residual.
+    // If we don't restart, the convergence speed will be too low . 
+    if (std::abs(rho) < eps2 * r0_norm) {
+      r = b - mv_product(A, x);
+      r0 = r;
+      rho = r0_norm = r.squaredNorm();
+      if (restarts++ == 0) current_iter = 0;
     }
 
-    return new_x;
+    double beta = (rho / rho_old) * (alpha / w);
+    p = r + beta * (p - w * Ap);
+
+    Ap = mv_product(A, p);
+    alpha = rho / r0.dot(Ap);
+
+    s = r - alpha * Ap;
+    As = mv_product(A, s);
+
+    double tmp = As.squaredNorm();
+    if (tmp > 0.0) {
+      w = As.dot(s) / tmp;
+    } else {
+      w = 0;
+    }
+
+    x += alpha * p + w * s;
+    r = s - w * As;
+
+    ++current_iter;
+  }
+}
+
+
+void ParallelOperations::Eigen_BiCGStab(const SparseMatrix<double, Eigen::RowMajor>& A,
+                                      VectorXd& x,
+                                      const VectorXd& b, 
+                                      const double& tolerance,
+                                      const int& max_iter) {
+        BiCGSTAB<SparseMatrix<double, Eigen::RowMajor>, Eigen::IdentityPreconditioner> solver;
+        solver.setMaxIterations(max_iter);
+        solver.setTolerance(tolerance);
+        solver.compute(A);
+        x = solver.solve(b);
 }
